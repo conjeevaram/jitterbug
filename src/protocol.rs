@@ -4,6 +4,7 @@ pub const PING: u8 = 0x01;
 pub const READ: u8 = 0x02;
 pub const WRITE: u8 = 0x03;
 pub const SYNC_READ: u8 = 0x82;
+pub const SYNC_WRITE: u8 = 0x83;
 pub const BROADCAST: u8 = 0xFE;
 
 /// checksum over id, length, instruction and params excluding FF FF header
@@ -122,5 +123,22 @@ mod tests {
     #[test]
     fn decode_too_short() {
         assert_eq!(decode(&[0xFF, 0xFF, 0x01]), Err(DecodeError::TooShort));
+    }
+
+    #[test]
+    fn sync_write_goals() {
+        let params = [
+            42, 2, 1, 0x00, 0x08, 2, 0x01, 0x08, 3, 0x02, 0x08, 4, 0x03, 0x08, 5, 0x04, 0x08, 6,
+            0x05, 0x08,
+        ];
+        let mut buf = [0u8; 32];
+        let n = encode(BROADCAST, SYNC_WRITE, &params, &mut buf);
+        assert_eq!(
+            &buf[..n],
+            &[
+                0xFF, 0xFF, 0xFE, 0x16, 0x83, 0x2A, 0x02, 1, 0x00, 0x08, 2, 0x01, 0x08, 3, 0x02,
+                0x08, 4, 0x03, 0x08, 5, 0x04, 0x08, 6, 0x05, 0x08, 0xE8
+            ][..]
+        );
     }
 }

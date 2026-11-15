@@ -8,6 +8,7 @@ use crate::protocol;
 const CURR_POS: u8 = 56;
 const TORQUE_ENABLE: u8 = 40;
 const GOAL_POS: u8 = 42;
+const MIN_LIMIT: u8 = 9;
 
 #[derive(Debug)]
 pub enum BusError {
@@ -124,6 +125,40 @@ impl Bus {
 
     pub fn write_goal(&mut self, id: u8, pos: u16) -> Result<(), BusError> {
         self.write(id, GOAL_POS, &pos.to_le_bytes())
+    }
+
+    pub fn read_limits(&mut self, id: u8) -> Result<(u16, u16), BusError> {
+        self.send(id, protocol::READ, &[MIN_LIMIT, 4])?;
+        let mut reply = [0u8; 16];
+        let n = self.recv(&mut reply)?;
+        let status = protocol::decode(&reply[..n])?;
+        if status.error != 0 {
+            return Err(BusError::Servo(status.error));
+        }
+        let p = status.params;
+        if p.len() != 4 {
+            return Err(BusError::Decode(protocol::DecodeError::BadLength));
+        }
+        Ok((
+            u16::from_le_bytes([p[0], p[1]]),
+            u16::from_le_bytes([p[2], p[3]]),
+        ))
+    }
+
+    pub fn sync_write_goals(&mut self, ids: &[u8], goals: &[u16]) -> Result<(), BusError> {
+        let mut params = [0u8; 26];
+        params[0] = GOAL_POS;
+        params[1] = 2;
+        for (k, (&id, &goal)) in ids.iter().zip(goals).enumerate() {
+            let i = 2 + 3 * k;
+            params[i] = id;
+            params[i + 1..i + 3].copy_from_slice(&goal.to_le_bytes());
+        }
+        self.send(
+            protocol::BROADCAST,
+            protocol::SYNC_WRITE,
+            &params[..2 + 3 * ids.len()],
+        )
     }
 }
 
