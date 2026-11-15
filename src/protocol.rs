@@ -3,6 +3,8 @@
 pub const PING: u8 = 0x01;
 pub const READ: u8 = 0x02;
 pub const WRITE: u8 = 0x03;
+pub const SYNC_READ: u8 = 0x82;
+pub const BROADCAST: u8 = 0xFE;
 
 /// checksum over id, length, instruction and params excluding FF FF header
 pub fn checksum(bytes: &[u8]) -> u8 {

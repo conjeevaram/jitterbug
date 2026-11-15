@@ -13,6 +13,7 @@ pub enum BusError {
     Port(serialport::Error),
     Decode(protocol::DecodeError),
     Servo(u8),
+    UnexpectedId(u8),
 }
 
 impl From<std::io::Error> for BusError {
@@ -46,19 +47,17 @@ impl Bus {
     }
 
     ///sends one instruction, reads the reply and returns its length
-    fn transact(
-        &mut self,
-        id: u8,
-        instr: u8,
-        params: &[u8],
-        reply: &mut [u8],
-    ) -> Result<usize, BusError> {
+    fn send(&mut self, id: u8, instr: u8, params: &[u8]) -> Result<(), BusError> {
         let mut frame = [0u8; 32];
         let n = protocol::encode(id, instr, params, &mut frame);
         self.port.clear(serialport::ClearBuffer::Input)?;
         self.port.write_all(&frame[..n])?;
         self.port.flush()?;
+        Ok(())
+    }
 
+    /// reads one reply frame and gives its length
+    fn recv(&mut self, reply: &mut [u8]) -> Result<usize, BusError> {
         self.port.read_exact(&mut reply[..4])?;
         let rest = reply[3] as usize;
         if rest + 4 > reply.len() {
@@ -70,14 +69,42 @@ impl Bus {
 
     pub fn read_position(&mut self, id: u8) -> Result<u16, BusError> {
         let mut reply = [0u8; 16];
-        let n = self.transact(id, protocol::READ, &[CURR_POS, 2], &mut reply)?;
+        self.send(id, protocol::READ, &[CURR_POS, 2])?;
+        let n = self.recv(&mut reply)?;
         let status = protocol::decode(&reply[..n])?;
-        if status.error != 0 {
-            return Err(BusError::Servo(status.error));
-        }
-        if status.params.len() != 2 {
-            return Err(BusError::Decode(protocol::DecodeError::BadLength));
-        }
-        Ok(u16::from_le_bytes([status.params[0], status.params[1]]))
+        parse_position(&status)
     }
+
+    pub fn sync_read_positions(&mut self, ids: &[u8], out: &mut [u16]) -> Result<(), BusError> {
+        let mut params = [0u8; 18];
+        params[0] = CURR_POS;
+        params[1] = 2;
+        params[2..2 + ids.len()].copy_from_slice(ids);
+        self.send(
+            protocol::BROADCAST,
+            protocol::SYNC_READ,
+            &params[..2 + ids.len()],
+        )?;
+
+        let mut reply = [0u8; 16];
+        for (k, &id) in ids.iter().enumerate() {
+            let n = self.recv(&mut reply)?;
+            let status = protocol::decode(&reply[..n])?;
+            if status.id != id {
+                return Err(BusError::UnexpectedId(status.id));
+            }
+            out[k] = parse_position(&status)?;
+        }
+        Ok(())
+    }
+}
+
+fn parse_position(status: &protocol::Status) -> Result<u16, BusError> {
+    if status.error != 0 {
+        return Err(BusError::Servo(status.error));
+    }
+    if status.params.len() != 2 {
+        return Err(BusError::Decode(protocol::DecodeError::BadLength));
+    }
+    Ok(u16::from_le_bytes([status.params[0], status.params[1]]))
 }
