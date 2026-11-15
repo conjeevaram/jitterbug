@@ -6,6 +6,8 @@ use std::time::Duration;
 use crate::protocol;
 
 const CURR_POS: u8 = 56;
+const TORQUE_ENABLE: u8 = 40;
+const GOAL_POS: u8 = 42;
 
 #[derive(Debug)]
 pub enum BusError {
@@ -96,6 +98,32 @@ impl Bus {
             out[k] = parse_position(&status)?;
         }
         Ok(())
+    }
+
+    fn write(&mut self, id: u8, addr: u8, data: &[u8]) -> Result<(), BusError> {
+        let mut params = [0u8; 8];
+        params[0] = addr;
+        params[1..1 + data.len()].copy_from_slice(data);
+        self.send(id, protocol::WRITE, &params[..1 + data.len()])?;
+
+        let mut reply = [0u8; 16];
+        let n = self.recv(&mut reply)?;
+        let status = protocol::decode(&reply[..n])?;
+        if status.id != id {
+            return Err(BusError::UnexpectedId(status.id));
+        }
+        if status.error != 0 {
+            return Err(BusError::Servo(status.error));
+        }
+        Ok(())
+    }
+
+    pub fn set_torque(&mut self, id: u8, on: bool) -> Result<(), BusError> {
+        self.write(id, TORQUE_ENABLE, &[on as u8])
+    }
+
+    pub fn write_goal(&mut self, id: u8, pos: u16) -> Result<(), BusError> {
+        self.write(id, GOAL_POS, &pos.to_le_bytes())
     }
 }
 
