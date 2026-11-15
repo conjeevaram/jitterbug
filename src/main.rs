@@ -1,13 +1,21 @@
 mod bus;
 mod protocol;
 
+use std::time::Instant;
+
 fn main() {
     let path = std::env::args().nth(1).expect("usage: jitterbug <port>");
     let mut bus = bus::Bus::open(&path).expect("open port");
-    for id in 1..=6 {
-        match bus.ping_raw(id) {
-            Ok(bytes) => println!("id {id}: {bytes:02X?}"),
-            Err(e) => println!("id {id}: error {e}"),
-        }
+    let mut times = Vec::new();
+    for _ in 0..1000 {
+        let t = Instant::now();
+        bus.read_position(1).expect("read");
+        times.push(t.elapsed().as_micros());
     }
+
+    times.sort();
+    println!(
+        "p50 {} us p99 {} us max {} us",
+        times[500], times[990], times[999]
+    );
 }
