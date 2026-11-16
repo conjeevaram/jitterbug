@@ -9,10 +9,9 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 const IDS: [u8; 6] = [1, 2, 3, 4, 5, 6];
-const MAX_STEP: u16 = 10;
+const MAX_SPEED: u64 = 2000; // servo ticks/second (10 per tick at 200hz)
 const N: usize = 6;
 const ACTIVE: [usize; N] = [0, 1, 2, 3, 4, 5];
-const PERIOD: Duration = Duration::from_micros(5000);
 const MAX_FAILS: u32 = 3;
 
 pub static STOP: AtomicBool = AtomicBool::new(false);
@@ -29,10 +28,15 @@ fn missed_ticks(deadline: Instant, now: Instant, period: Duration) -> u32 {
     (now.saturating_duration_since(deadline).as_nanos() / period.as_nanos()) as u32
 }
 
+fn max_step(period: Duration) -> u16 {
+    (MAX_SPEED * period.as_micros() as u64 / 1_000_000).max(1) as u16
+}
+
 pub fn run<S: Servo>(
     leader: &mut S,
     follower: &mut S,
     ticks: u32,
+    period: Duration,
     log: &mut Vec<Tick>,
 ) -> Result<(), BusError> {
     let mut lim = [(0u16, 0u16); 6];
@@ -51,15 +55,18 @@ pub fn run<S: Servo>(
         follower.set_torque(IDS[j], true)?;
     }
 
+    let step = max_step(period);
     let mut fails = 0u32;
+    let mut first_fail: Option<Instant> = None;
     let mut skipped = 0u32;
     let mut k = 0u32;
     let t0 = Instant::now();
+    let cpu0 = rt::thread_cpu_ns();
     while k < ticks {
         if STOP.load(Ordering::Relaxed) {
             break;
         }
-        let deadline = t0 + PERIOD * k;
+        let deadline = t0 + period * k;
         let now = Instant::now();
         if deadline > now {
             sleep(deadline - now);
@@ -67,24 +74,33 @@ pub fn run<S: Servo>(
 
         let woke = Instant::now();
         let core = rt::cpu();
-        let missed = missed_ticks(deadline, woke, PERIOD);
+        let missed = missed_ticks(deadline, woke, period);
         k += 1 + missed;
         skipped += missed;
 
         match leader.sync_read_positions(&IDS, &mut l) {
-            Ok(_) => fails = 0,
+            Ok(_) => {
+                fails = 0;
+                first_fail = None;
+            }
             Err(e) => {
                 fails += 1;
+                let since = *first_fail.get_or_insert(woke);
                 if fails >= MAX_FAILS {
+                    eprintln!(
+                        "abort: {fails} failed reads over {} us",
+                        since.elapsed().as_micros()
+                    );
                     return Err(e);
                 }
                 continue;
             }
         }
+
         let read = Instant::now();
 
         for (n, &j) in ACTIVE.iter().enumerate() {
-            goal[j] = safety::shape(l[j], goal[j], lim[j].0, lim[j].1, MAX_STEP);
+            goal[j] = safety::shape(l[j], goal[j], lim[j].0, lim[j].1, step);
             goals[n] = goal[j];
         }
 
@@ -99,6 +115,11 @@ pub fn run<S: Servo>(
         });
     }
     eprintln!("missed ticks: {skipped}");
+    let cpu = rt::thread_cpu_ns() - cpu0;
+    eprintln!(
+        "cpu: {:.1}% of wall",
+        100.0 * cpu as f64 / t0.elapsed().as_nanos() as f64
+    );
     Ok(())
 }
 
@@ -115,6 +136,8 @@ pub fn release<S: Servo>(follower: &mut S) -> Result<(), BusError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const P: Duration = Duration::from_millis(5);
 
     fn err() -> BusError {
         BusError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "mock"))
@@ -186,7 +209,7 @@ mod tests {
         leader.script = vec![false; 3];
         let mut follower = Mock::new(2000);
         let mut log = Vec::new();
-        assert!(run(&mut leader, &mut follower, 20, &mut log).is_err());
+        assert!(run(&mut leader, &mut follower, 20, P, &mut log).is_err());
         assert_eq!(leader.reads, 3);
         assert!(follower.goals.is_empty());
     }
@@ -197,7 +220,16 @@ mod tests {
         leader.script = vec![false, false, true, false, false];
         let mut follower = Mock::new(2000);
         let mut log = Vec::new();
-        assert!(run(&mut leader, &mut follower, 10, &mut log).is_ok());
+        assert!(
+            run(
+                &mut leader,
+                &mut follower,
+                10,
+                Duration::from_millis(20),
+                &mut log
+            )
+            .is_ok()
+        );
         assert_eq!(follower.goals.len(), 6); // 10 ticks 4 skipped
     }
 
@@ -207,7 +239,7 @@ mod tests {
         let mut follower = Mock::new(2000);
         follower.fail_writes = true;
         let mut log = Vec::new();
-        assert!(run(&mut leader, &mut follower, 10, &mut log).is_err());
+        assert!(run(&mut leader, &mut follower, 10, P, &mut log).is_err());
         assert_eq!(leader.reads, 1);
     }
 
@@ -217,12 +249,12 @@ mod tests {
         let mut follower = Mock::new(2000);
         follower.lim = (0, 3000);
         let mut log = Vec::new();
-        assert!(run(&mut leader, &mut follower, 120, &mut log).is_ok());
+        assert!(run(&mut leader, &mut follower, 120, P, &mut log).is_ok());
         let mut prev = [2000u16; 6];
         for g in &follower.goals {
             for j in 0..6 {
                 assert!(g[j] <= 3000);
-                assert!(g[j].abs_diff(prev[j]) <= MAX_STEP);
+                assert!(g[j].abs_diff(prev[j]) <= max_step(P));
             }
             prev = *g;
         }
@@ -244,5 +276,12 @@ mod tests {
         assert_eq!(missed_ticks(t + ms(10), t, ms(5)), 0);
         assert_eq!(missed_ticks(t, t + ms(4), ms(5)), 0);
         assert_eq!(missed_ticks(t, t + ms(12), ms(5)), 2);
+    }
+
+    #[test]
+    fn step_scales_with_period() {
+        assert_eq!(max_step(Duration::from_micros(5000)), 10);
+        assert_eq!(max_step(Duration::from_micros(3003)), 6);
+        assert_eq!(max_step(Duration::from_micros(1)), 1);
     }
 }
