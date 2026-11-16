@@ -1,5 +1,6 @@
 mod bus;
 mod protocol;
+mod rt;
 mod safety;
 mod teleop;
 
@@ -15,16 +16,27 @@ fn write_csv(path: &str, log: &[teleop::Tick]) {
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let leader_path = args.next().expect("usage: jitterbug <leader> <follower>");
-    let follower_path = args.next().expect("usage: jitterbug <leader> <follower>");
-    let mut leader = bus::Bus::open(&leader_path).expect("open leader");
-    let mut follower = bus::Bus::open(&follower_path).expect("open follower");
-    let mut log = Vec::with_capacity(teleop::TICKS as usize);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() < 4 {
+        eprintln!("usage: jitterbug <leader> <follower> <ticks> <out.csv> [slack_ns]");
+        std::process::exit(2);
+    }
+    let ticks: u32 = args[2].parse().expect("ticks");
+    let out = &args[3];
+    if let Some(s) = args.get(4) {
+        rt::set_timer_slack_ns(s.parse().expect("slack_ns"));
+    }
+    eprintln!("timer slack ns: {}", rt::timer_slack_ns());
 
-    let result = teleop::run(&mut leader, &mut follower, &mut log);
+    let mut leader = bus::Bus::open(&args[0]).expect("open leader");
+    let mut follower = bus::Bus::open(&args[1]).expect("open follower");
+    let mut log = Vec::with_capacity(ticks as usize);
+
+    ctrlc::set_handler(|| teleop::STOP.store(true, std::sync::atomic::Ordering::Relaxed))
+        .expect("ctrlc handler");
+    let result = teleop::run(&mut leader, &mut follower, ticks, &mut log);
     let off = teleop::release(&mut follower);
-    write_csv("teleop.csv", &log);
+    write_csv(out, &log);
     result.expect("run");
     off.expect("torque off");
 }

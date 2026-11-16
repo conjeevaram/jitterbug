@@ -1,15 +1,18 @@
 //! fixed rate leader to follower teleop
 
 use crate::{bus, safety};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 const IDS: [u8; 6] = [1, 2, 3, 4, 5, 6];
-const MAX_STEP: u16 = 5;
+const MAX_STEP: u16 = 10;
 const N: usize = 6;
 const ACTIVE: [usize; N] = [0, 1, 2, 3, 4, 5];
 const PERIOD: Duration = Duration::from_micros(5000);
-pub const TICKS: u32 = 2000;
+const MAX_FAILS: u32 = 3;
+
+pub static STOP: AtomicBool = AtomicBool::new(false);
 
 pub struct Tick {
     pub late_us: u128,
@@ -20,6 +23,7 @@ pub struct Tick {
 pub fn run(
     leader: &mut bus::Bus,
     follower: &mut bus::Bus,
+    ticks: u32,
     log: &mut Vec<Tick>,
 ) -> Result<(), bus::BusError> {
     let mut lim = [(0u16, 0u16); 6];
@@ -38,15 +42,28 @@ pub fn run(
         follower.set_torque(IDS[j], true)?;
     }
 
+    let mut fails = 0u32;
     let t0 = Instant::now();
-    for k in 0..TICKS {
+    for k in 0..ticks {
+        if STOP.load(Ordering::Relaxed) {
+            break;
+        }
         let deadline = t0 + PERIOD * k;
         let now = Instant::now();
         if deadline > now {
             sleep(deadline - now);
         }
         let woke = Instant::now();
-        leader.sync_read_positions(&IDS, &mut l)?;
+        match leader.sync_read_positions(&IDS, &mut l) {
+            Ok(_) => fails = 0,
+            Err(e) => {
+                fails += 1;
+                if fails >= MAX_FAILS {
+                    return Err(e);
+                }
+                continue;
+            }
+        }
         let read = Instant::now();
         for (n, &j) in ACTIVE.iter().enumerate() {
             goal[j] = safety::shape(l[j], goal[j], lim[j].0, lim[j].1, MAX_STEP);
