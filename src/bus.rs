@@ -70,14 +70,6 @@ impl Bus {
         Ok(rest + 4)
     }
 
-    pub fn read_position(&mut self, id: u8) -> Result<u16, BusError> {
-        let mut reply = [0u8; 16];
-        self.send(id, protocol::READ, &[CURR_POS, 2])?;
-        let n = self.recv(&mut reply)?;
-        let status = protocol::decode(&reply[..n])?;
-        parse_position(&status)
-    }
-
     pub fn sync_read_positions(&mut self, ids: &[u8], out: &mut [u16]) -> Result<(), BusError> {
         let mut params = [0u8; 18];
         params[0] = CURR_POS;
@@ -161,6 +153,20 @@ impl Bus {
         )
     }
 }
+
+impl std::fmt::Display for BusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            BusError::Io(e) => write!(f, "io: {e}"),
+            BusError::Port(e) => write!(f, "port: {e}"),
+            BusError::Decode(e) => write!(f, "decode: {e:?}"),
+            BusError::Servo(flags) => write!(f, "servo error flags {flags:#04x}"),
+            BusError::UnexpectedId(id) => write!(f, "unexpected id {id}"),
+        }
+    }
+}
+
+impl std::error::Error for BusError {}
 
 fn parse_position(status: &protocol::Status) -> Result<u16, BusError> {
     if status.error != 0 {

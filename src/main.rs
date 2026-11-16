@@ -2,6 +2,7 @@ mod bus;
 mod protocol;
 mod rt;
 mod safety;
+mod servo;
 mod teleop;
 
 use std::fs::File;

@@ -1,6 +1,5 @@
 //! servo bus packet encoding and decoding for the st3215
 
-pub const PING: u8 = 0x01;
 pub const READ: u8 = 0x02;
 pub const WRITE: u8 = 0x03;
 pub const SYNC_READ: u8 = 0x82;
@@ -70,13 +69,6 @@ pub fn decode(data: &[u8]) -> Result<Status<'_>, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ping_id1() {
-        let mut buf = [0u8; 16];
-        let n = encode(1, PING, &[], &mut buf);
-        assert_eq!(&buf[..n], &[0xFF, 0xFF, 0x01, 0x02, 0x01, 0xFB][..]);
-    }
 
     #[test]
     fn read_pos_id1() {
