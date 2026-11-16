@@ -12,7 +12,12 @@ fn write_csv(path: &str, log: &[teleop::Tick]) {
     let mut f = File::create(path).expect("create csv");
     writeln!(f, "late_us,read_us,write_us").unwrap();
     for t in log {
-        writeln!(f, "{},{},{}", t.late_us, t.read_us, t.write_us).unwrap();
+        writeln!(
+            f,
+            "{},{},{},{},{}",
+            t.late_us, t.read_us, t.write_us, t.core, t.missed
+        )
+        .unwrap();
     }
 }
 

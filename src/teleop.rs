@@ -1,6 +1,7 @@
 //! fixed rate leader to follower teleop
 
 use crate::bus::BusError;
+use crate::rt;
 use crate::safety;
 use crate::servo::Servo;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +21,12 @@ pub struct Tick {
     pub late_us: u128,
     pub read_us: u128,
     pub write_us: u128,
+    pub core: i32,
+    pub missed: u32,
+}
+
+fn missed_ticks(deadline: Instant, now: Instant, period: Duration) -> u32 {
+    (now.saturating_duration_since(deadline).as_nanos() / period.as_nanos()) as u32
 }
 
 pub fn run<S: Servo>(
@@ -45,8 +52,10 @@ pub fn run<S: Servo>(
     }
 
     let mut fails = 0u32;
+    let mut skipped = 0u32;
+    let mut k = 0u32;
     let t0 = Instant::now();
-    for k in 0..ticks {
+    while k < ticks {
         if STOP.load(Ordering::Relaxed) {
             break;
         }
@@ -55,7 +64,13 @@ pub fn run<S: Servo>(
         if deadline > now {
             sleep(deadline - now);
         }
+
         let woke = Instant::now();
+        let core = rt::cpu();
+        let missed = missed_ticks(deadline, woke, PERIOD);
+        k += 1 + missed;
+        skipped += missed;
+
         match leader.sync_read_positions(&IDS, &mut l) {
             Ok(_) => fails = 0,
             Err(e) => {
@@ -67,18 +82,23 @@ pub fn run<S: Servo>(
             }
         }
         let read = Instant::now();
+
         for (n, &j) in ACTIVE.iter().enumerate() {
             goal[j] = safety::shape(l[j], goal[j], lim[j].0, lim[j].1, MAX_STEP);
             goals[n] = goal[j];
         }
+
         follower.sync_write_goals(&ids, &goals)?;
         let written = Instant::now();
         log.push(Tick {
             late_us: woke.saturating_duration_since(deadline).as_micros(),
             read_us: read.duration_since(woke).as_micros(),
             write_us: written.duration_since(read).as_micros(),
+            core,
+            missed,
         });
     }
+    eprintln!("missed ticks: {skipped}");
     Ok(())
 }
 
@@ -215,5 +235,14 @@ mod tests {
         follower.torque_fail = Some(3);
         assert!(release(&mut follower).is_err());
         assert_eq!(follower.torque.iter().filter(|(_, on)| !on).count(), 6);
+    }
+
+    #[test]
+    fn counts_whole_periods_behind() {
+        let t = Instant::now();
+        let ms = Duration::from_millis;
+        assert_eq!(missed_ticks(t + ms(10), t, ms(5)), 0);
+        assert_eq!(missed_ticks(t, t + ms(4), ms(5)), 0);
+        assert_eq!(missed_ticks(t, t + ms(12), ms(5)), 2);
     }
 }

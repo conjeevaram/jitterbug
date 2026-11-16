@@ -26,3 +26,7 @@ pub fn timer_slack_ns() -> i64 {
         ) as i64
     }
 }
+
+pub fn cpu() -> i32 {
+    unsafe { libc::sched_getcpu() }
+}
