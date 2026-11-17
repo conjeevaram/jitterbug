@@ -3,13 +3,26 @@ mod protocol;
 mod rt;
 mod safety;
 mod servo;
+mod stimulus;
 mod teleop;
 
 use std::fs::File;
 use std::io::Write;
 use std::time::{Duration, Instant};
+use stimulus::{Stimulus, Wave};
+use teleop::Cfg;
 
-const KNOWN_FLAGS: [&str; 2] = ["hz", "pin"];
+const KNOWN_FLAGS: [&str; 9] = [
+    "hz",
+    "pin",
+    "max-speed",
+    "stimulus",
+    "joint",
+    "amp",
+    "f0",
+    "f1",
+    "hold",
+];
 
 fn write_csv(path: &str, log: &[teleop::Tick]) {
     let mut f = File::create(path).expect("create csv");
@@ -42,6 +55,30 @@ fn flag<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
         .map(|v| v.parse().unwrap_or_else(|_| panic!("bad --{name}: {v}")))
 }
 
+/// builds the test signal from the stim flags if they exist
+fn stimulus_from_flags(flags: &[String]) -> Option<Stimulus> {
+    let kind: String = flag(flags, "stimulus")?;
+    let joint: usize = flag(flags, "joint").expect("--stimulus needs --joint");
+    assert!((1..=6).contains(&joint), "joint out of range");
+    let amp: f64 = flag(flags, "amp").expect("--stimulus needs --amp");
+    assert!(amp > 0.0 && amp <= 300.0, "amp must be in (0, 300");
+    let wave = match kind.as_str() {
+        "chirp" => Wave::Chirp {
+            f0: flag(flags, "f0").unwrap_or(0.3),
+            f1: flag(flags, "f1").unwrap_or(8.0),
+        },
+        "steps" => Wave::Steps {
+            hold: flag(flags, "hold").unwrap_or(1.0),
+        },
+        other => panic!("unknown --stimulus {other}"),
+    };
+    Some(Stimulus {
+        joint: joint - 1,
+        amp,
+        wave,
+    })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (flags, pos): (Vec<_>, Vec<_>) = args.iter().cloned().partition(|a| a.starts_with("--"));
@@ -50,7 +87,11 @@ fn main() {
         assert!(KNOWN_FLAGS.contains(&name), "unknown flag {f}");
     }
     if pos.len() != 4 {
-        eprintln!("usage: jitterbug <leader> <follower> <ticks> <out.csv> [--hz=N] [--pin=CORE]");
+        eprintln!(
+            "usage: jitterbug <leader> <follower> <ticks> <out.csv> [--hz=N] [--pin=CORE] \
+             [--max-speed=TICKS_PER_S] [--stimulus=chirp|steps --joint=1..6 --amp=TICKS \
+             [--f0=HZ --f1=HZ | --hold=S]]"
+        );
         std::process::exit(2);
     }
     let ticks: u32 = pos[2].parse().expect("ticks");
@@ -64,6 +105,12 @@ fn main() {
     let period = Duration::from_nanos(1_000_000_000 / hz);
     eprintln!("rate hz: {hz}");
 
+    let max_speed: u64 = flag(&flags, "max-speed").unwrap_or(teleop::MAX_SPEED);
+    let stimulus = stimulus_from_flags(&flags);
+    if let Some(s) = &stimulus {
+        s.check(hz, max_speed).unwrap_or_else(|e| panic!("{e}"));
+    }
+
     let mut leader = bus::Bus::open(&pos[0]).expect("open leader");
     let mut follower = bus::Bus::open(&pos[1]).expect("open follower");
     let mut log = Vec::with_capacity(ticks as usize);
@@ -76,7 +123,11 @@ fn main() {
         eprintln!("pinned to core {c}")
     }
 
-    let result = teleop::run(&mut leader, &mut follower, ticks, period, &mut log);
+    let cfg = Cfg {
+        max_speed,
+        stimulus,
+    };
+    let result = teleop::run(&mut leader, &mut follower, ticks, period, cfg, &mut log);
     let r0 = Instant::now();
     let off = teleop::release(&mut follower);
     eprintln!("release took {} us", r0.elapsed().as_micros());
