@@ -39,3 +39,14 @@ pub fn thread_cpu_ns() -> u64 {
     unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
+
+pub fn pin_to_core(core: usize) {
+    let r = unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_SET(core, &mut set);
+        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set)
+    };
+    if r != 0 {
+        eprintln!("pin to core failed")
+    }
+}

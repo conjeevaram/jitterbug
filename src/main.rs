@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-const KNOWN_FLAGS: [&str; 1] = ["hz"];
+const KNOWN_FLAGS: [&str; 2] = ["hz", "pin"];
 
 fn write_csv(path: &str, log: &[teleop::Tick]) {
     let mut f = File::create(path).expect("create csv");
@@ -50,7 +50,7 @@ fn main() {
         assert!(KNOWN_FLAGS.contains(&name), "unknown flag {f}");
     }
     if pos.len() != 4 {
-        eprintln!("usage: jitterbug <leader> <follower> <ticks> <out.csv> [--hz=N]");
+        eprintln!("usage: jitterbug <leader> <follower> <ticks> <out.csv> [--hz=N] [--pin=CORE]");
         std::process::exit(2);
     }
     let ticks: u32 = pos[2].parse().expect("ticks");
@@ -70,6 +70,12 @@ fn main() {
 
     ctrlc::set_handler(|| teleop::STOP.store(true, std::sync::atomic::Ordering::Relaxed))
         .expect("ctrlc handler");
+
+    if let Some(c) = flag::<usize>(&flags, "pin") {
+        rt::pin_to_core(c);
+        eprintln!("pinned to core {c}")
+    }
+
     let result = teleop::run(&mut leader, &mut follower, ticks, period, &mut log);
     let r0 = Instant::now();
     let off = teleop::release(&mut follower);

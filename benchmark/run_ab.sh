@@ -13,6 +13,7 @@ FOLLOWER=${FOLLOWER:-/dev/ttyACM1}
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${OUT:-$HERE/results/$(date +%Y%m%d_%H%M%S)}
 JB_BIN=${JB_BIN:-$HERE/../target/release/jitterbug}
+JB_FLAGS=${JB_FLAGS:-} # core pinning, hz, etc
 PY=${PY:-/home/conjeevaram/manipulation/.venv/bin/python}
 LEROBOT_EXTRA=${LEROBOT_EXTRA:-}
 if [[ -z "$LEROBOT_EXTRA" ]]; then
@@ -39,7 +40,7 @@ run_arm() {
   echo "round $r: $arm -> $csv"
   case $arm in
     lerobot) lerobot_once "$csv" || { echo "lerobot failed, retrying once"; sleep 5; lerobot_once "$csv"; } ;;
-    jitterbug) "$JB_BIN" "$LEADER" "$FOLLOWER" "$TICKS" "$csv" --hz="$HZ" 2>"${csv%.csv}.log" ;;
+    jitterbug) "$JB_BIN" "$LEADER" "$FOLLOWER" "$TICKS" "$csv" --hz="$HZ" $JB_FLAGS 2>"${csv%.csv}.log" ;;
   esac
 }
 
