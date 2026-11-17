@@ -2,7 +2,7 @@
 
 Jitterbug is a fixed rate leader/follower teleop layer for SO-101 arms, written from scratch in Rust. The more complete technical report and discovery is on the [blog](https://www.conjeevaram.net/jitterbug)!
 
-![hero](https://www.conjeevaram.net/projects/assets/jitterbug.gif)
+![hero](assets/jitterbug.gif)
 
 ## Results
 
