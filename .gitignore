@@ -1,3 +1,5 @@
 /target
 /data/*
 /benchmark/results/
+/benchmark/overnight.log
+/ident/*.csv

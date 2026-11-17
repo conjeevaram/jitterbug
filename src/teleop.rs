@@ -10,12 +10,13 @@ use std::time::{Duration, Instant};
 
 const IDS: [u8; 6] = [1, 2, 3, 4, 5, 6];
 const MAX_SPEED: u64 = 2000; // servo ticks/second (10 per tick at 200hz)
-const N: usize = 6;
+const N: usize = IDS.len();
 const ACTIVE: [usize; N] = [0, 1, 2, 3, 4, 5];
 const MAX_FAILS: u32 = 3;
 
 pub static STOP: AtomicBool = AtomicBool::new(false);
 
+#[derive(Default)]
 pub struct Tick {
     pub late_us: u128,
     pub read_us: u128,
@@ -24,6 +25,9 @@ pub struct Tick {
     pub missed: u32,
     pub trk: u16,
     pub e2e: u16,
+    pub leader: [u16; N],
+    pub goal: [u16; N],
+    pub meas: [u16; N],
 }
 
 fn missed_ticks(deadline: Instant, now: Instant, period: Duration) -> u32 {
@@ -34,6 +38,117 @@ fn max_step(period: Duration) -> u16 {
     (MAX_SPEED * period.as_micros() as u64 / 1_000_000).max(1) as u16
 }
 
+/// loop state that lives across ticks
+struct Loop {
+    lim: [(u16, u16); N],
+    ids: [u8; N],
+    goal: [u16; N],
+    max_step: u16,
+    fails: u32,
+    first_fail: Option<Instant>,
+    follower_read_fails: u32,
+}
+
+impl Loop {
+    /// reads limits and curr followers pose, then holds the current pose with torque on
+    fn start<S: Servo>(follower: &mut S, period: Duration) -> Result<Loop, BusError> {
+        let mut lim = [(0u16, 0u16); N];
+        for (i, &id) in IDS.iter().enumerate() {
+            lim[i] = follower.read_limits(id)?;
+        }
+        let mut goal = [0u16; N];
+        follower.sync_read_positions(&IDS, &mut goal)?;
+        let mut ids = [0u8; N];
+        for (n, &j) in ACTIVE.iter().enumerate() {
+            ids[n] = IDS[j];
+            follower.write_goal(IDS[j], goal[j])?;
+            follower.set_torque(IDS[j], true)?;
+        }
+        Ok(Loop {
+            lim,
+            ids,
+            goal,
+            max_step: max_step(period),
+            fails: 0,
+            first_fail: None,
+            follower_read_fails: 0,
+        })
+    }
+
+    /// in one tick: read both arms, shape and write goals
+    fn step<S: Servo>(
+        &mut self,
+        leader: &mut S,
+        follower: &mut S,
+        woke: Instant,
+        base: Tick,
+    ) -> Result<Option<Tick>, BusError> {
+        let mut l = [0u16; N];
+        let mut meas = [0u16; N];
+        let lb = leader.begin_sync_read(&IDS);
+        let fb = follower.begin_sync_read(&IDS);
+        let lr = lb.and_then(|_| leader.finish_sync_read(&IDS, &mut l));
+        let fr = fb.and_then(|_| follower.finish_sync_read(&IDS, &mut meas));
+        match lr {
+            Ok(_) => {
+                self.fails = 0;
+                self.first_fail = None;
+            }
+            Err(e) => {
+                self.fails += 1;
+                let since = *self.first_fail.get_or_insert(woke);
+                if self.fails >= MAX_FAILS {
+                    eprintln!(
+                        "abort: {} failed reads over {} us",
+                        self.fails,
+                        since.elapsed().as_micros()
+                    );
+                    return Err(e);
+                }
+                return Ok(None);
+            }
+        }
+        let read = Instant::now();
+
+        let (mut trk, mut e2e) = (u16::MAX, u16::MAX);
+        if fr.is_ok() {
+            trk = ACTIVE
+                .iter()
+                .map(|&j| self.goal[j].abs_diff(meas[j]))
+                .max()
+                .unwrap_or(0);
+            e2e = ACTIVE
+                .iter()
+                .map(|&j| l[j].abs_diff(meas[j]))
+                .max()
+                .unwrap_or(0);
+        } else {
+            self.follower_read_fails += 1;
+            meas = [u16::MAX; N];
+        }
+
+        let mut goals = [0u16; N];
+        for (n, &j) in ACTIVE.iter().enumerate() {
+            let (lo, hi) = self.lim[j];
+            self.goal[j] = safety::shape(l[j], self.goal[j], lo, hi, self.max_step);
+            goals[n] = self.goal[j];
+        }
+        follower.sync_write_goals(&self.ids, &goals)?;
+        let written = Instant::now();
+
+        Ok(Some(Tick {
+            read_us: read.duration_since(woke).as_micros(),
+            write_us: written.duration_since(read).as_micros(),
+            trk,
+            e2e,
+            leader: l,
+            goal: self.goal,
+            meas,
+            ..base
+        }))
+    }
+}
+
 pub fn run<S: Servo>(
     leader: &mut S,
     follower: &mut S,
@@ -41,28 +156,8 @@ pub fn run<S: Servo>(
     period: Duration,
     log: &mut Vec<Tick>,
 ) -> Result<(), BusError> {
-    let mut lim = [(0u16, 0u16); 6];
-    for (i, &id) in IDS.iter().enumerate() {
-        lim[i] = follower.read_limits(id)?;
-    }
-    let mut l = [0u16; 6];
-    let mut meas = [0u16; 6];
-    let mut goal = [0u16; 6];
-    follower.sync_read_positions(&IDS, &mut goal)?;
-
-    let mut ids = [0u8; N];
-    let mut goals = [0u16; N];
-    for (n, &j) in ACTIVE.iter().enumerate() {
-        ids[n] = IDS[j];
-        follower.write_goal(IDS[j], goal[j])?;
-        follower.set_torque(IDS[j], true)?;
-    }
-
-    let step = max_step(period);
-    let mut fails = 0u32;
-    let mut first_fail: Option<Instant> = None;
+    let mut st = Loop::start(follower, period)?;
     let mut skipped = 0u32;
-    let mut follower_read_fails = 0u32;
     let mut k = 0u32;
     let t0 = Instant::now();
     let cpu0 = rt::thread_cpu_ns();
@@ -77,71 +172,22 @@ pub fn run<S: Servo>(
         }
 
         let woke = Instant::now();
-        let core = rt::cpu();
         let missed = missed_ticks(deadline, woke, period);
         k += 1 + missed;
         skipped += missed;
 
-        let lb = leader.begin_sync_read(&IDS);
-        let fb = follower.begin_sync_read(&IDS);
-        let lr = lb.and_then(|_| leader.finish_sync_read(&IDS, &mut l));
-        let fr = fb.and_then(|_| follower.finish_sync_read(&IDS, &mut meas));
-        match lr {
-            Ok(_) => {
-                fails = 0;
-                first_fail = None;
-            }
-            Err(e) => {
-                fails += 1;
-                let since = *first_fail.get_or_insert(woke);
-                if fails >= MAX_FAILS {
-                    eprintln!(
-                        "abort: {fails} failed reads over {} us",
-                        since.elapsed().as_micros()
-                    );
-                    return Err(e);
-                }
-                continue;
-            }
-        }
-
-        let read = Instant::now();
-
-        let (mut trk, mut e2e) = (u16::MAX, u16::MAX);
-        if fr.is_ok() {
-            trk = ACTIVE
-                .iter()
-                .map(|&j| goal[j].abs_diff(meas[j]))
-                .max()
-                .unwrap_or(0);
-            e2e = ACTIVE
-                .iter()
-                .map(|&j| l[j].abs_diff(meas[j]))
-                .max()
-                .unwrap_or(0);
-        } else {
-            follower_read_fails += 1;
-        }
-
-        for (n, &j) in ACTIVE.iter().enumerate() {
-            goal[j] = safety::shape(l[j], goal[j], lim[j].0, lim[j].1, step);
-            goals[n] = goal[j];
-        }
-
-        follower.sync_write_goals(&ids, &goals)?;
-        let written = Instant::now();
-        log.push(Tick {
+        let base = Tick {
             late_us: woke.saturating_duration_since(deadline).as_micros(),
-            read_us: read.duration_since(woke).as_micros(),
-            write_us: written.duration_since(read).as_micros(),
-            core,
+            core: rt::cpu(),
             missed,
-            trk,
-            e2e,
-        });
+            ..Tick::default()
+        };
+        if let Some(t) = st.step(leader, follower, woke, base)? {
+            log.push(t);
+        }
     }
     eprintln!("missed ticks: {skipped}");
-    eprintln!("follower read fails: {follower_read_fails}");
+    eprintln!("follower read fails: {}", st.follower_read_fails);
     let cpu = rt::thread_cpu_ns() - cpu0;
     eprintln!(
         "cpu: {:.1}% of wall",
