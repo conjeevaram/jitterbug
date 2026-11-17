@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# interleaved A/B: lerobot vs jitterbug (timer slack 0 / 1)
+# interleaved A/B: lerobot vs jitterbug
 
 set -euo pipefail
 trap 'echo interrupted; exit 130' INT
@@ -24,7 +24,7 @@ fi
 TICKS=$((HZ * SECS))
 
 mkdir -p "$OUT"
-arms=(lerobot jb_slack0 jb_slack1)
+arms=(lerobot jitterbug)
 
 lerobot_once() { # csv
   TELEOP_CSV="$1" "$PY" "$HERE/lerobot_instrumented.py" \
@@ -39,8 +39,7 @@ run_arm() {
   echo "round $r: $arm -> $csv"
   case $arm in
     lerobot) lerobot_once "$csv" || { echo "lerobot failed, retrying once"; sleep 5; lerobot_once "$csv"; } ;;
-    jb_slack0) "$JB_BIN" "$LEADER" "$FOLLOWER" "$TICKS" "$csv" --slack-ns=0 --hz="$HZ" 2>"${csv%.csv}.log" ;;
-    jb_slack1) "$JB_BIN" "$LEADER" "$FOLLOWER" "$TICKS" "$csv" --slack-ns=1 --hz="$HZ" 2>"${csv%.csv}.log" ;;
+    jitterbug) "$JB_BIN" "$LEADER" "$FOLLOWER" "$TICKS" "$csv" --hz="$HZ" 2>"${csv%.csv}.log" ;;
   esac
 }
 

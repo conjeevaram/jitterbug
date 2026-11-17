@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-const KNOWN_FLAGS: [&str; 2] = ["hz", "slack-ns"];
+const KNOWN_FLAGS: [&str; 1] = ["hz"];
 
 fn write_csv(path: &str, log: &[teleop::Tick]) {
     let mut f = File::create(path).expect("create csv");
@@ -50,15 +50,13 @@ fn main() {
         assert!(KNOWN_FLAGS.contains(&name), "unknown flag {f}");
     }
     if pos.len() != 4 {
-        eprintln!("usage: jitterbug <leader> <follower> <ticks> <out.csv> [--slack-ns=N] [--hz=N]");
+        eprintln!("usage: jitterbug <leader> <follower> <ticks> <out.csv> [--hz=N]");
         std::process::exit(2);
     }
     let ticks: u32 = pos[2].parse().expect("ticks");
     let out = &pos[3];
 
-    if let Some(s) = flag::<u64>(&flags, "slack-ns") {
-        rt::set_timer_slack_ns(s); // 0 resets to kernel default (50 us)
-    }
+    rt::set_timer_slack_ns(1); // kernel default is 50, 1 ns gives very little room for error
     eprintln!("timer slack ns: {}", rt::timer_slack_ns());
 
     let hz: u64 = flag(&flags, "hz").unwrap_or(200);
