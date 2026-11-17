@@ -22,6 +22,8 @@ pub struct Tick {
     pub write_us: u128,
     pub core: i32,
     pub missed: u32,
+    pub trk: u16,
+    pub e2e: u16,
 }
 
 fn missed_ticks(deadline: Instant, now: Instant, period: Duration) -> u32 {
@@ -44,6 +46,7 @@ pub fn run<S: Servo>(
         lim[i] = follower.read_limits(id)?;
     }
     let mut l = [0u16; 6];
+    let mut meas = [0u16; 6];
     let mut goal = [0u16; 6];
     follower.sync_read_positions(&IDS, &mut goal)?;
 
@@ -59,6 +62,7 @@ pub fn run<S: Servo>(
     let mut fails = 0u32;
     let mut first_fail: Option<Instant> = None;
     let mut skipped = 0u32;
+    let mut follower_read_fails = 0u32;
     let mut k = 0u32;
     let t0 = Instant::now();
     let cpu0 = rt::thread_cpu_ns();
@@ -78,7 +82,11 @@ pub fn run<S: Servo>(
         k += 1 + missed;
         skipped += missed;
 
-        match leader.sync_read_positions(&IDS, &mut l) {
+        let lb = leader.begin_sync_read(&IDS);
+        let fb = follower.begin_sync_read(&IDS);
+        let lr = lb.and_then(|_| leader.finish_sync_read(&IDS, &mut l));
+        let fr = fb.and_then(|_| follower.finish_sync_read(&IDS, &mut meas));
+        match lr {
             Ok(_) => {
                 fails = 0;
                 first_fail = None;
@@ -99,6 +107,22 @@ pub fn run<S: Servo>(
 
         let read = Instant::now();
 
+        let (mut trk, mut e2e) = (u16::MAX, u16::MAX);
+        if fr.is_ok() {
+            trk = ACTIVE
+                .iter()
+                .map(|&j| goal[j].abs_diff(meas[j]))
+                .max()
+                .unwrap_or(0);
+            e2e = ACTIVE
+                .iter()
+                .map(|&j| l[j].abs_diff(meas[j]))
+                .max()
+                .unwrap_or(0);
+        } else {
+            follower_read_fails += 1;
+        }
+
         for (n, &j) in ACTIVE.iter().enumerate() {
             goal[j] = safety::shape(l[j], goal[j], lim[j].0, lim[j].1, step);
             goals[n] = goal[j];
@@ -112,9 +136,12 @@ pub fn run<S: Servo>(
             write_us: written.duration_since(read).as_micros(),
             core,
             missed,
+            trk,
+            e2e,
         });
     }
     eprintln!("missed ticks: {skipped}");
+    eprintln!("follower read fails: {follower_read_fails}");
     let cpu = rt::thread_cpu_ns() - cpu0;
     eprintln!(
         "cpu: {:.1}% of wall",
@@ -173,7 +200,10 @@ mod tests {
         fn read_limits(&mut self, _id: u8) -> Result<(u16, u16), BusError> {
             Ok(self.lim)
         }
-        fn sync_read_positions(&mut self, ids: &[u8], out: &mut [u16]) -> Result<(), BusError> {
+        fn begin_sync_read(&mut self, _ids: &[u8]) -> Result<(), BusError> {
+            Ok(())
+        }
+        fn finish_sync_read(&mut self, ids: &[u8], out: &mut [u16]) -> Result<(), BusError> {
             let ok = self.script.get(self.reads).copied().unwrap_or(true);
             self.reads += 1;
             if !ok {
@@ -283,5 +313,26 @@ mod tests {
         assert_eq!(max_step(Duration::from_micros(5000)), 10);
         assert_eq!(max_step(Duration::from_micros(3003)), 6);
         assert_eq!(max_step(Duration::from_micros(1)), 1);
+    }
+
+    #[test]
+    fn logs_tracking_and_teleop_error() {
+        let mut leader = Mock::new(2100);
+        let mut follower = Mock::new(2000);
+        let mut log = Vec::new();
+        run(&mut leader, &mut follower, 3, P, &mut log).unwrap();
+        assert_eq!((log[0].trk, log[0].e2e), (0, 100));
+        assert_eq!(log[1].trk, 10); // goal moves one capped step, follower doesnt
+    }
+
+    #[test]
+    fn follower_read_failure_is_logged_not_fatal() {
+        let mut leader = Mock::new(2000);
+        let mut follower = Mock::new(2000);
+        follower.script = vec![true, false]; // startup read passes, first tick fails
+        let mut log = Vec::new();
+        assert!(run(&mut leader, &mut follower, 3, P, &mut log).is_ok());
+        assert_eq!(log[0].trk, u16::MAX);
+        assert_ne!(log[1].trk, u16::MAX);
     }
 }

@@ -11,12 +11,12 @@ use std::time::{Duration, Instant};
 
 fn write_csv(path: &str, log: &[teleop::Tick]) {
     let mut f = File::create(path).expect("create csv");
-    writeln!(f, "late_us,read_us,write_us,core,missed").unwrap();
+    writeln!(f, "late_us,read_us,write_us,core,missed,trk,e2e").unwrap();
     for t in log {
         writeln!(
             f,
-            "{},{},{},{},{}",
-            t.late_us, t.read_us, t.write_us, t.core, t.missed
+            "{},{},{},{},{},{},{}",
+            t.late_us, t.read_us, t.write_us, t.core, t.missed, t.trk, t.e2e,
         )
         .unwrap();
     }

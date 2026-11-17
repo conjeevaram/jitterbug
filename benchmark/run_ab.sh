@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # interleaved A/B: lerobot vs jitterbug (timer slack 0 / 1)
 
 set -euo pipefail

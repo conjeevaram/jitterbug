@@ -49,7 +49,7 @@ impl Bus {
         Ok(Bus { port })
     }
 
-    ///sends one instruction, reads the reply and returns its length
+    ///sends one instruction
     fn send(&mut self, id: u8, instr: u8, params: &[u8]) -> Result<(), BusError> {
         let mut frame = [0u8; 32];
         let n = protocol::encode(id, instr, params, &mut frame);
@@ -70,7 +70,8 @@ impl Bus {
         Ok(rest + 4)
     }
 
-    pub fn sync_read_positions(&mut self, ids: &[u8], out: &mut [u16]) -> Result<(), BusError> {
+    /// sends pos request and returns, so another bus can send its request
+    pub fn begin_sync_read(&mut self, ids: &[u8]) -> Result<(), BusError> {
         let mut params = [0u8; 18];
         params[0] = CURR_POS;
         params[1] = 2;
@@ -79,8 +80,12 @@ impl Bus {
             protocol::BROADCAST,
             protocol::SYNC_READ,
             &params[..2 + ids.len()],
-        )?;
+        )
+    }
 
+    /// waits for one reply per id and fills 'out'
+    /// must follow begin sync read ^ on the same bus before anything else is sent
+    pub fn finish_sync_read(&mut self, ids: &[u8], out: &mut [u16]) -> Result<(), BusError> {
         let mut reply = [0u8; 16];
         for (k, &id) in ids.iter().enumerate() {
             let n = self.recv(&mut reply)?;
