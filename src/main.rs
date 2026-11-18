@@ -12,10 +12,11 @@ use std::time::{Duration, Instant};
 use stimulus::{Stimulus, Wave};
 use teleop::Cfg;
 
-const KNOWN_FLAGS: [&str; 10] = [
+const KNOWN_FLAGS: [&str; 11] = [
     "hz",
     "pin",
     "rt",
+    "lead",
     "max-speed",
     "stimulus",
     "joint",
@@ -90,7 +91,7 @@ fn main() {
     if pos.len() != 4 {
         eprintln!(
             "usage: jitterbug <leader> <follower> <ticks> <out.csv> [--hz=N] [--pin=CORE] [--rt=PRIO] \
-             [--max-speed=TICKS_PER_S] [--stimulus=chirp|steps --joint=1..6 --amp=TICKS \
+             [--lead=MS] [--max-speed=TICKS_PER_S] [--stimulus=chirp|steps --joint=1..6 --amp=TICKS \
              [--f0=HZ --f1=HZ | --hold=S]]"
         );
         std::process::exit(2);
@@ -110,6 +111,10 @@ fn main() {
     let stimulus = stimulus_from_flags(&flags);
     if let Some(s) = &stimulus {
         s.check(hz, max_speed).unwrap_or_else(|e| panic!("{e}"));
+    }
+    let lead_ms: Option<f64> = flag(&flags, "lead");
+    if let Some(ms) = lead_ms {
+        assert!(ms > 0.0 && ms <= 500.0, "lead must be in (0, 500] ms");
     }
 
     let mut leader = bus::Bus::open(&pos[0]).expect("open leader");
@@ -131,6 +136,7 @@ fn main() {
     let cfg = Cfg {
         max_speed,
         stimulus,
+        lead_ms,
     };
     let result = teleop::run(&mut leader, &mut follower, ticks, period, cfg, &mut log);
     let r0 = Instant::now();

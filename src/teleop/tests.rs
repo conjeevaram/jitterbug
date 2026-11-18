@@ -1,8 +1,12 @@
 //! self explanatory
 
+use super::command::Command;
 use super::session::max_step;
 use super::*;
+use crate::safety;
 use crate::stimulus::Wave;
+use std::collections::VecDeque;
+use std::f64::consts::PI;
 
 const P: Duration = Duration::from_millis(5);
 
@@ -15,6 +19,7 @@ fn run<S: Servo>(
 ) -> Result<(), BusError> {
     let cfg = Cfg {
         max_speed: MAX_SPEED,
+        lead_ms: None,
         stimulus: None,
     };
     super::run(leader, follower, ticks, period, cfg, log)
@@ -23,6 +28,7 @@ fn run<S: Servo>(
 fn stimulus(joint: usize, amp: f64, wave: Wave) -> Cfg {
     Cfg {
         max_speed: 100_000,
+        lead_ms: None,
         stimulus: Some(Stimulus { joint, amp, wave }),
     }
 }
@@ -92,6 +98,95 @@ impl Servo for Mock {
         }
         Ok(())
     }
+}
+
+/// follower that obeys the model fitted to joint 2 (sysid/fit.py):
+/// deadband, then delay, then a first order lag
+struct SimServo {
+    pos: [f64; 6],
+    held: [f64; 6],                 // goal after the deadband
+    in_transit: VecDeque<[f64; 6]>, // held goals that haven't reached the servo yet
+}
+
+const SIM_DEADBAND: f64 = 4.0;
+const SIM_DELAY: usize = 8;
+const SIM_TAU: f64 = 0.075;
+
+impl SimServo {
+    fn new(start: u16) -> Self {
+        let pose = [start as f64; 6];
+        SimServo {
+            pos: pose,
+            held: pose,
+            in_transit: VecDeque::from(vec![pose; SIM_DELAY - 1]),
+        }
+    }
+}
+
+impl Servo for SimServo {
+    fn read_limits(&mut self, _id: u8) -> Result<(u16, u16), BusError> {
+        Ok((0, 4095))
+    }
+    fn begin_sync_read(&mut self, _ids: &[u8]) -> Result<(), BusError> {
+        Ok(())
+    }
+    fn finish_sync_read(&mut self, ids: &[u8], out: &mut [u16]) -> Result<(), BusError> {
+        for i in 0..ids.len() {
+            out[i] = self.pos[i].round() as u16;
+        }
+        Ok(())
+    }
+    /// goals arrive once per tick, so this is where servo moves one tick
+    fn sync_write_goals(&mut self, ids: &[u8], goals: &[u16]) -> Result<(), BusError> {
+        for i in 0..ids.len() {
+            let g = goals[i] as f64;
+            self.held[i] = self.held[i].clamp(g - SIM_DEADBAND, g + SIM_DEADBAND);
+        }
+        self.in_transit.push_back(self.held);
+        let target = self.in_transit.pop_front().unwrap();
+        let a = (-P.as_secs_f64() / SIM_TAU).exp();
+        for i in 0..ids.len() {
+            self.pos[i] += (1.0 - a) * (target[i] - self.pos[i]);
+        }
+        Ok(())
+    }
+    fn write_goal(&mut self, _id: u8, _pos: u16) -> Result<(), BusError> {
+        Ok(())
+    }
+    fn set_torque(&mut self, _id: u8, _on: bool) -> Result<(), BusError> {
+        Ok(())
+    }
+}
+
+/// rms leader to follower error for a leader moving as a 1 hz sine of +-50 ticks
+fn sim_e2e(lead_ms: Option<f64>) -> f64 {
+    let mut follower = SimServo::new(2000);
+    let mut command = match lead_ms {
+        None => Command::Leader,
+        Some(ms) => Command::lead(ms / 1e3 / P.as_secs_f64()),
+    };
+    let (ticks, max) = (1000, max_step(MAX_SPEED, P));
+    let (mut goal, mut sum) = ([2000u16; 6], 0.0);
+    for k in 0..ticks {
+        let t = k as f64 * P.as_secs_f64();
+        let leader = [(2000.0 + 50.0 * (2.0 * PI * t).sin()).round() as u16; 6];
+        let mut meas = [0u16; 6];
+        follower.finish_sync_read(&IDS, &mut meas).unwrap();
+        sum += (leader[0] as f64 - meas[0] as f64).powi(2);
+        let target = command.target(&leader, t);
+        for j in 0..6 {
+            goal[j] = safety::shape(target[j], goal[j], 0, 4095, max);
+        }
+        follower.sync_write_goals(&IDS, &goal).unwrap();
+    }
+    (sum / ticks as f64).sqrt()
+}
+
+#[test]
+fn lead_cuts_tracking_error_on_a_simulated_servo() {
+    let (plain, led) = (sim_e2e(None), sim_e2e(Some(115.0)));
+    println!("e2e rms plain {plain:.1}, lead {led:.1}");
+    assert!(led < plain / 2.0);
 }
 
 #[test]

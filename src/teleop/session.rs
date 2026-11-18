@@ -82,7 +82,10 @@ impl Session {
         follower.sync_read_positions(&IDS, &mut goal)?;
 
         let command = match cfg.stimulus {
-            None => Command::Leader,
+            None => match cfg.lead_ms {
+                None => Command::Leader,
+                Some(ms) => Command::lead(ms / 1e3 / period.as_secs_f64()),
+            },
             Some(signal) => {
                 if !signal.fits(goal[signal.joint], lim[signal.joint]) {
                     eprintln!("stimulus: +- {} ticks oustide joint lims", signal.amp);

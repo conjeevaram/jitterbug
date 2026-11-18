@@ -24,6 +24,7 @@ pub static STOP: AtomicBool = AtomicBool::new(false);
 
 pub struct Cfg {
     pub max_speed: u64,
+    pub lead_ms: Option<f64>,
     pub stimulus: Option<Stimulus>,
 }
 
