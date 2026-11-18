@@ -50,3 +50,19 @@ pub fn pin_to_core(core: usize) {
         eprintln!("pin to core failed")
     }
 }
+
+/// run this thread as SCHED_FIFO and lock memory, so normal tasks cannot preempt it
+pub fn make_realtime(prio: i32) {
+    let param = libc::sched_param {
+        sched_priority: prio,
+    };
+    if unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) } != 0 {
+        eprintln!("SCHED_FIFO failed, needs CAP_SYS_NICE");
+        return;
+    }
+    if unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) } != 0 {
+        eprintln!("mlockall failed, needs CAP_IPC_LOCK");
+        return;
+    }
+    eprintln!("realtime: SCHED_FIFO {prio}, memory locked");
+}

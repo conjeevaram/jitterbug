@@ -2,4 +2,4 @@
 /data/*
 /benchmark/results/
 /benchmark/overnight.log
-/ident/*.csv
+/sysid/data/

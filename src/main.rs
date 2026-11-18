@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 use stimulus::{Stimulus, Wave};
 use teleop::Cfg;
 
-const KNOWN_FLAGS: [&str; 9] = [
+const KNOWN_FLAGS: [&str; 10] = [
     "hz",
     "pin",
+    "rt",
     "max-speed",
     "stimulus",
     "joint",
@@ -88,7 +89,7 @@ fn main() {
     }
     if pos.len() != 4 {
         eprintln!(
-            "usage: jitterbug <leader> <follower> <ticks> <out.csv> [--hz=N] [--pin=CORE] \
+            "usage: jitterbug <leader> <follower> <ticks> <out.csv> [--hz=N] [--pin=CORE] [--rt=PRIO] \
              [--max-speed=TICKS_PER_S] [--stimulus=chirp|steps --joint=1..6 --amp=TICKS \
              [--f0=HZ --f1=HZ | --hold=S]]"
         );
@@ -121,6 +122,10 @@ fn main() {
     if let Some(c) = flag::<usize>(&flags, "pin") {
         rt::pin_to_core(c);
         eprintln!("pinned to core {c}")
+    }
+    if let Some(p) = flag::<i32>(&flags, "rt") {
+        assert!((1..=99).contains(&p), "rt priority must be 1 to 99");
+        rt::make_realtime(p);
     }
 
     let cfg = Cfg {
